@@ -1,15 +1,3 @@
----
-title: Network Incident Response Env
-emoji: "🛡️"
-colorFrom: blue
-colorTo: red
-sdk: docker
-app_port: 7860
-base_path: /docs
-pinned: false
-tags:
-  - openenv
----
 
 # Network Incident Response Environment
 
