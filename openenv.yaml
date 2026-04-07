@@ -4,7 +4,7 @@ description: >
   SOC analyst training environment. AI agents detect and respond to realistic
   network attacks by analysing SIEM log streams and executing defensive actions.
 
-author: "normie69k"           # fill in your HF username
+author: "normie69k"
 license: MIT
 
 inference_entry: inference.py

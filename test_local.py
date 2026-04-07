@@ -64,6 +64,12 @@ def _():
     assert grade and grade_ssh_bruteforce and grade_stealth_scan and grade_lateral_movement
 
 
+@test("Import: app")
+def _():
+    from app import app
+    assert app
+
+
 @test("Action validation: block_ip requires 'ip' key")
 def _():
     from env_models import Action
@@ -188,6 +194,31 @@ def _():
         raise AssertionError("Should have raised")
     except RuntimeError:
         pass
+
+
+@test("API: POST /reset returns plain Observation")
+def _():
+    from app import app, reset
+    from network_incident_env import NetworkIncidentEnv
+
+    app.state.env = NetworkIncidentEnv(task_id="ssh_bruteforce")
+    payload = reset().model_dump()
+    assert "recent_logs" in payload
+    assert "query_results" in payload
+    assert "blocked_ips" in payload
+    assert "time_elapsed" in payload
+    assert "observation" not in payload
+    assert "task_id" not in payload
+
+
+@test("API: POST /reset accepts task_id")
+def _():
+    from app import app, reset, state, ResetRequest
+    from network_incident_env import NetworkIncidentEnv
+
+    app.state.env = NetworkIncidentEnv(task_id="ssh_bruteforce")
+    reset(ResetRequest(task_id="stealth_scan"))
+    assert state()["task_id"] == "stealth_scan"
 
 
 @test("Env: blocking attacker ends episode (ssh_bruteforce)")

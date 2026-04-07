@@ -24,9 +24,6 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
-
 TASKS = ["ssh_bruteforce", "stealth_scan", "lateral_movement"]
 BENCHMARK = "network-incident-response"
 MAX_HISTORY = 6
@@ -36,7 +33,10 @@ TASK_SEEDS = {
     "lateral_movement": 303,
 }
 
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
+def get_client() -> OpenAI:
+    api_key = HF_TOKEN or os.getenv("OPENAI_API_KEY") or "local-heuristic-fallback"
+    return OpenAI(base_url=API_BASE_URL, api_key=api_key)
 
 SYSTEM_PROMPT = """
 You are a SOC analyst. Return only JSON with this exact shape:
@@ -184,6 +184,7 @@ def model_action(
     messages.append({"role": "user", "content": user_prompt})
 
     try:
+        client = get_client()
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,

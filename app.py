@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+
+from pydantic import BaseModel
 
 from env_models import Action, Observation, Reward
 from network_incident_env import NetworkIncidentEnv, SCENARIO_REGISTRY
@@ -87,28 +89,37 @@ def list_tasks() -> Dict[str, Any]:
     }
 
 
-class ResetRequest(Action):
-    """Thin wrapper so FastAPI generates a proper schema for /reset."""
-    pass
+class ResetRequest(BaseModel):
+    """Request body for /reset."""
+
+    task_id: str = "ssh_bruteforce"
 
 
-@app.post("/reset")
-def reset(task_id: str = "ssh_bruteforce") -> Dict[str, Any]:
+@app.post("/reset", response_model=Observation)
+def reset(payload: Optional[ResetRequest] = None, task_id: Optional[str] = None) -> Observation:
     """
     Reset the environment for a given task.
 
-    Query param: ?task_id=ssh_bruteforce | stealth_scan | lateral_movement
+    Accepts either:
+    - JSON body: {"task_id": "..."}
+    - Query param: ?task_id=...
     """
-    if task_id not in SCENARIO_REGISTRY:
+    requested_task = (
+        payload.task_id
+        if payload is not None and payload.task_id
+        else task_id or "ssh_bruteforce"
+    )
+    if requested_task not in SCENARIO_REGISTRY:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown task_id '{task_id}'. Valid: {list(SCENARIO_REGISTRY.keys())}",
+            detail=(
+                f"Unknown task_id '{requested_task}'. "
+                f"Valid: {list(SCENARIO_REGISTRY.keys())}"
+            ),
         )
-    env = get_env()
     # Reinitialise for the requested task
-    app.state.env = NetworkIncidentEnv(task_id=task_id)
-    obs: Observation = app.state.env.reset()
-    return {"observation": obs.model_dump()}
+    app.state.env = NetworkIncidentEnv(task_id=requested_task)
+    return app.state.env.reset()
 
 
 @app.post("/step")
