@@ -1,0 +1,42 @@
+name: network-incident-response
+version: "1.0.0"
+description: >
+  SOC analyst training environment. AI agents detect and respond to realistic
+  network attacks by analysing SIEM log streams and executing defensive actions.
+
+author: "normie69k"           # fill in your HF username
+license: MIT
+
+inference_entry: inference.py
+
+tasks:
+  - id: ssh_bruteforce
+    difficulty: easy
+    max_steps: 20
+    description: >
+      Identify and block an SSH brute-force attacker hidden among
+      legitimate login traffic.
+
+  - id: stealth_scan
+    difficulty: medium
+    max_steps: 20
+    description: >
+      Detect a slow TCP port-scan buried in high-volume HTTP/HTTPS traffic
+      without blocking legitimate users.
+
+  - id: lateral_movement
+    difficulty: hard
+    max_steps: 20
+    description: >
+      Correlate a multi-stage APT attack (SQLi → web-server compromise →
+      DB pivot) and isolate the compromised host before data exfiltration.
+
+environment:
+  api_base_url: ${API_BASE_URL}
+  model_name:   ${MODEL_NAME}
+  hf_token:     ${HF_TOKEN}
+
+scoring:
+  metric: graded_score        # float in [0, 1]
+  aggregation: mean           # average across tasks
+  higher_is_better: true
