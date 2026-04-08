@@ -1,136 +1,143 @@
+# 🛡️ Network Incident Response Environment
 
-# Network Incident Response Environment
+[![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![OpenEnv](https://img.shields.io/badge/OpenEnv-Compatible-orange?style=for-the-badge)](https://github.com/openenv)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Server-009688?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker)](https://www.docker.com/)
 
-This project is an OpenEnv-compatible benchmark for real incident-response work. The agent reads SIEM-like network logs, investigates suspicious activity, and chooses defensive actions that stop attacks while minimizing collateral damage.
+**Version:** 1.0.0 | **Status:** Production Ready
 
-## Overview
+The Network Incident Response Environment is an OpenEnv-compatible benchmark designed for real incident-response work. It acts as a comprehensive training and testing ground where AI agents detect and respond to realistic network attacks by analyzing SIEM log streams and executing defensive actions.
 
-The environment simulates three realistic SOC workflows:
+---
 
-- `ssh_bruteforce` (easy): repeated failed SSH attempts mixed with legitimate logins
-- `stealth_scan` (medium): low-rate port scanning hidden inside heavy web traffic
-- `lateral_movement` (hard): SQLi-driven compromise followed by pivoting from a web server to a database
+## 🔗 Live Links & Deployments
 
-The implementation exposes typed Pydantic models for observations, actions, and rewards, plus `reset()`, `step()`, and `state()` methods.
+* 🐳 **Docker Hub:** `docker pull normie69k/network-incident-response-env`
+* 🤗 **Hugging Face Space:** Tagged with `openenv` and structured for Docker-based deployment
+* **Hugging Face Deployment link** - https://normie69k-network-incident-response-env.hf.space/
 
-## Observation Space
+---
 
-Each step returns an `Observation` object with:
+## 📋 Table of Contents
 
-- `recent_logs`: last 40 visible log entries
-- `query_results`: up to 10 entries matched by the previous `query_logs` action
-- `blocked_ips`: currently blocked IPs
-- `time_elapsed`: current step number
+1. [Executive Summary & Vision](#1-executive-summary--vision)
+2. [Technical Architecture & RL Loop](#2-technical-architecture--rl-loop)
+3. [Installation & Setup (Docker & Manual)](#3-installation--setup-docker--manual)
+4. [Component Deep Dive](#4-component-deep-dive)
+5. [Detailed Task Workflows](#5-detailed-task-workflows)
+6. [Reward System & Scoring](#6-reward-system--scoring)
+7. [License](#7-license)
 
-## Action Space
+---
 
-Each action is a typed `Action` model:
+## 1. Executive Summary & Vision
 
-- `action_type="query_logs"` with `parameters={"filter": "<ip|port|keyword|protocol>"}`
-- `action_type="block_ip"` with `parameters={"ip": "<address>"}`
-- `action_type="no_op"` with `parameters={}`
+**The Vision:** To provide a robust, standardized Gym-style environment that accurately measures an AI agent's capability to operate as a Security Operations Center (SOC) analyst.
 
-## Reward Design
+### 🛑 The Problems Solved
+1.  **Unrealistic Benchmarks:** Many security AI tests are static Q&A. **Solution:** A sequential decision-making environment tracking state changes up to 20 steps.
+2.  **Collateral Damage Ignorance:** Agents often blindly block IPs. **Solution:** Heavy negative scoring (-0.50) for blocking legitimate internal hosts, enforcing cautious investigation.
+3.  **Complex Attack Chains:** Single-vector attacks are rare. **Solution:** Multi-stage APT simulations involving SQLi, web-server compromise, and database pivoting.
 
-The reward function gives incremental feedback throughout the trajectory:
+---
 
-- `+1.00` for blocking the real attacker or the pivot host in lateral movement
-- `-0.50` for blocking a legitimate internal host
-- `+0.10` for a first query that directly identifies the attacker IP
-- `+0.03` for queries that surface suspicious logs
-- `+0.01` for queries that return benign context
-- `-0.02` for empty or useless queries
-- `-0.05` for duplicate or irrelevant blocks
-- `-0.01` for repeated idle loops
+## 2. Technical Architecture & RL Loop
 
-## Task Graders
+The environment relies on typed Pydantic models to strictly structure the observations, actions, and rewards for the agent.
 
-There are three deterministic graders in [graders.py](/home/karan/Projects/network-incident-response-env/graders.py):
+### 🏗️ The Observation-Action Loop
+The agent continuously receives network logs and must decide whether to query further, block a threat, or wait.
 
-- Easy: reward fast, accurate SSH brute-force containment
-- Medium: reward clean detection of stealth scans without collateral damage
-- Hard: reward timely isolation of the pivot before deeper database compromise
+```mermaid
+graph TD
+    subgraph The SOC Environment
+        L[SIEM Logs Stream] --> O
+        O[Observation Data]
+        E[Evaluation Engine] --> R[Reward/Penalty]
+    end
 
-Each grader returns a score in `[0.0, 1.0]`.
+    subgraph The AI Agent
+        A[Analysis & Reasoning]
+        Act[Take Action]
+    end
 
-## Python 3.11 Setup
-
-```bash
-python3.11 -m venv venv
-source venv/bin/activate
-python3.11 -m pip install --upgrade pip
-python3.11 -m pip install -r requirements.txt
-cp .env.example .env
+    O -- "Last 40 Logs + Query Hits" --> A
+    A --> Act
+    Act -- "query_logs | block_ip | no_op" --> E
+    R -. "Feedback (Score [-1, 1])" .-> A
 ```
 
-Set the following variables in `.env` or your shell:
+---
 
-- `API_BASE_URL` with a default already provided by `inference.py`
-- `MODEL_NAME` with a default already provided by `inference.py`
-- `HF_TOKEN` which is required
+## 3. Installation & Setup (Docker & Manual)
 
-## Usage
+### 🚀 3.1 Automated Deployment (Docker)
+The fastest way to spin up the local server and run the simulation.
 
-Run the local verification suite:
-
-```bash
-python3.11 test_local.py
-```
-
-Run the inference baseline:
-
-```bash
-python3.11 inference.py
-```
-
-Run a single task:
-
-```bash
-python3.11 inference.py ssh_bruteforce
-```
-
-Start the HTTP server locally:
-
-```bash
-python3.11 app.py
-```
-
-Validate the manifest:
-
-```bash
-openenv validate
-```
-
-## Docker
-
-Pull the published image:
-
+**1. Pull and Run the Published Image:**
 ```bash
 docker pull normie69k/network-incident-response-env
-```
-
-Run the published image:
-
-```bash
 docker run --rm -p 7860:7860 --env-file .env normie69k/network-incident-response-env
 ```
+*(Source:)*
 
-Build the container:
-
-```bash
-docker build -t network-incident-response-env .
-```
-
-Run the container:
+### ⚙️ 3.2 Manual Native Setup (Developers)
+Requires Python >= 3.11.
 
 ```bash
-docker run --rm -p 7860:7860 --env-file .env network-incident-response-env
+# 1. Initialize Virtual Environment
+python3.11 -m venv venv
+source venv/bin/activate
+
+# 2. Install Dependencies
+python3.11 -m pip install --upgrade pip
+python3.11 -m pip install -r requirements.txt
+
+# 3. Configure Environment
+cp .env.example .env
 ```
+Ensure `HF_TOKEN`, `API_BASE_URL`, and `MODEL_NAME` are set in your `.env`.
 
-## Hugging Face Space
+---
 
-This repository is structured for a Docker-based Hugging Face Space. The Space metadata is embedded in this README front matter, and the project is tagged with `openenv`.
+## 4. Component Deep Dive
 
-## Baseline Notes
+### 🛡️ 1. The Environment Core (`network_incident_env.py`)
+Provides standard `reset()`, `step()`, and `state()` methods.
+* **Observation Space:** Provides the `recent_logs` (last 40 entries), `query_results` (up to 10 entries), `blocked_ips`, and `time_elapsed`.
+* **Action Space:** Enforces typed actions: `query_logs` (filters by IP/port/keyword), `block_ip`, and `no_op`.
 
-`inference.py` uses the OpenAI client for model calls and falls back to a deterministic local heuristic if the remote API is unavailable or returns invalid JSON. The environment itself is seeded, so task generation is reproducible across runs.
+### 🚀 2. The Deterministic Graders (`graders.py`)
+Evaluates the agent's performance, outputting a final normalized score in `[0.0, 1.0]`. The scoring metric aggregates the mean graded score across tasks.
+
+---
+
+## 5. Detailed Task Workflows
+
+The environment ships with three dynamically generated scenarios:
+
+* 🟢 **Easy (`ssh_bruteforce`):** Identify and block an SSH brute-force attacker hidden among legitimate login traffic.
+* 🟡 **Medium (`stealth_scan`):** Detect a slow TCP port-scan buried in high-volume HTTP/HTTPS traffic without blocking legitimate users.
+* 🔴 **Hard (`lateral_movement`):** Correlate a multi-stage APT attack (SQLi → web-server compromise → DB pivot) and isolate the compromised host before data exfiltration.
+
+---
+
+## 6. Reward System & Scoring
+
+The environment provides rich, incremental feedback throughout the trajectory to guide RL algorithms or prompt-based reasoning:
+
+| Action | Outcome | Reward Increment |
+| :--- | :--- | :--- |
+| **`block_ip`** | Correctly blocking the attacker or pivot host | `+1.00` |
+| **`block_ip`** | Blocking a legitimate internal host (Collateral) | `-0.50` |
+| **`query_logs`** | First query directly identifying attacker IP | `+0.10` |
+| **`query_logs`** | Surfacing suspicious/warning logs | `+0.03` |
+| **`query_logs`** | Query returns benign context | `+0.01` |
+| **`query_logs`** | Empty or useless query returned | `-0.02` |
+| **`block_ip`** | Duplicate or irrelevant IP block | `-0.05` |
+| **`no_op`** | Repeated idle loops | `-0.01` |
+
+*(Note: The episode automatically ends when the threat is successfully neutralized or the max limit of 20 steps is reached)*
+
+---
