@@ -2,7 +2,7 @@
 graders.py
 Deterministic episode graders for all three tasks.
 
-Each grader receives an EpisodeSummary and returns a float score in [0, 1].
+Each grader receives an EpisodeSummary and returns a float score in (0, 1).
 
 Grading rubric
 ──────────────
@@ -14,6 +14,14 @@ lateral_movement : Pivot isolated early → 1.0 | late → 0.5 | DB compromised 
 from __future__ import annotations
 
 from env_models import EpisodeSummary
+
+
+_EPSILON = 1e-4
+
+
+def _strict_unit_interval(score: float) -> float:
+    """Clamp any score into the open interval required by the validator."""
+    return round(min(1.0 - _EPSILON, max(_EPSILON, score)), 4)
 
 
 # ──────────────────────────────────────────────
@@ -29,12 +37,12 @@ def grade_ssh_bruteforce(summary: EpisodeSummary) -> float:
     Collateral damage subtracts 0.20 from the above.
     """
     if summary.attacker_ip not in summary.blocked_ips:
-        return 0.0
+        return _strict_unit_interval(0.0)
 
     base = 1.0 if summary.steps_taken <= 10 else 0.7
     if summary.collateral_damage:
         base = max(0.0, base - 0.20)
-    return round(base, 4)
+    return _strict_unit_interval(base)
 
 
 def grade_stealth_scan(summary: EpisodeSummary) -> float:
@@ -46,7 +54,7 @@ def grade_stealth_scan(summary: EpisodeSummary) -> float:
     Speed bonus: if solved in ≤8 steps add 0.10 (capped at 1.0).
     """
     if summary.attacker_ip not in summary.blocked_ips:
-        return 0.0
+        return _strict_unit_interval(0.0)
 
     base = 0.60 if summary.collateral_damage else 1.0
 
@@ -54,7 +62,7 @@ def grade_stealth_scan(summary: EpisodeSummary) -> float:
     if not summary.collateral_damage and summary.steps_taken <= 8:
         base = min(1.0, base + 0.10)
 
-    return round(base, 4)
+    return _strict_unit_interval(base)
 
 
 def grade_lateral_movement(summary: EpisodeSummary) -> float:
@@ -76,7 +84,7 @@ def grade_lateral_movement(summary: EpisodeSummary) -> float:
     )
 
     if not target_blocked:
-        return 0.0
+        return _strict_unit_interval(0.0)
 
     # Find the step at which the blocking occurred
     # We approximate using steps_taken (first correct block ends episode)
@@ -85,7 +93,7 @@ def grade_lateral_movement(summary: EpisodeSummary) -> float:
     if summary.collateral_damage:
         base = max(0.0, base - 0.20)
 
-    return round(base, 4)
+    return _strict_unit_interval(base)
 
 
 # ──────────────────────────────────────────────
@@ -104,4 +112,4 @@ def grade(summary: EpisodeSummary) -> float:
     grader = _GRADERS.get(summary.task_id)
     if grader is None:
         raise ValueError(f"No grader registered for task_id='{summary.task_id}'")
-    return grader(summary)
+    return _strict_unit_interval(grader(summary))

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from env_models import Action
+from graders import grade
 from network_incident_env import NetworkIncidentEnv
 
 load_dotenv()
@@ -219,6 +220,7 @@ def run_episode(task_id: str) -> float:
     done = False
     step = 0
     success = False
+    score = 0.0001
 
     print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
 
@@ -235,12 +237,15 @@ def run_episode(task_id: str) -> float:
                 flush=True,
             )
         success = env.state()["threat_neutralized"]
-        return max(0.0, sum(rewards))
+        summary = env.episode_summary()
+        score = grade(summary)
+        return score
     finally:
         env.close()
         rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
         print(
-            f"[END] success={str(success).lower()} steps={step} rewards={rewards_str}",
+            f"[END] success={str(success).lower()} steps={step} "
+            f"score={score:.4f} rewards={rewards_str}",
             flush=True,
         )
 
