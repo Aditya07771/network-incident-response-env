@@ -1,142 +1,138 @@
 """
 app.py
-FastAPI server — exposes the environment over HTTP for the OpenEnv harness
-and for manual exploration via the /docs Swagger UI.
+FastAPI server for the Network Incident Response Environment v2.
 
-Endpoints:
-  POST /reset       → resets env, returns first Observation
-  POST /step        → sends an Action, returns Observation + Reward + done + info
-  GET  /state       → lightweight current-state snapshot
-  GET  /tasks       → list available task IDs
-  GET  /health      → liveness probe
+Endpoints (OpenEnv standard):
+  POST /reset          Start a new episode
+  POST /step           Execute an action
+  GET  /state          Current environment state
+  GET  /tasks          Available tasks
+  GET  /health         Health check
+  GET  /summary        Episode summary with graded score
+  GET  /grade_breakdown  Detailed scoring breakdown (debug)
 """
 
 from __future__ import annotations
 
-import os
+import json
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 
-from pydantic import BaseModel
-
-from env_models import Action, Observation, Reward
-from network_incident_env import NetworkIncidentEnv, SCENARIO_REGISTRY
+from env_models import Action, Observation
+from graders import grade, grade_breakdown
+from network_incident_env import SCENARIO_REGISTRY, NetworkIncidentEnv
 
 
 # ──────────────────────────────────────────────
-# App init
+# Application state
 # ──────────────────────────────────────────────
+
+_env: NetworkIncidentEnv | None = None
+_last_done: bool = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Pre-load a default environment so /state is always available."""
-    app.state.env = NetworkIncidentEnv(task_id="ssh_bruteforce")
+    """Pre-create a default environment on startup."""
+    global _env
+    _env = NetworkIncidentEnv(task_id="ssh_bruteforce")
     yield
+    if _env:
+        _env.close()
 
+
+# ──────────────────────────────────────────────
+# FastAPI app
+# ──────────────────────────────────────────────
 
 app = FastAPI(
     title="Network Incident Response Environment",
     description=(
-        "OpenEnv-compatible SOC analyst training environment. "
-        "Agents detect and respond to network attacks by analysing log streams."
+        "An OpenEnv-compliant RL environment for training SOC analyst agents. "
+        "The agent investigates network incidents using a realistic toolkit "
+        "(traffic analysis, payload inspection, threat intel, event correlation) "
+        "before taking containment actions (block, isolate) and submitting a report."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# Allow CORS (needed for HF Spaces iframe / external callers)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
 # ──────────────────────────────────────────────
-# Helper
-# ──────────────────────────────────────────────
-
-def get_env() -> NetworkIncidentEnv:
-    return app.state.env   # type: ignore[attr-defined]
-
-
-# ──────────────────────────────────────────────
-# Routes
+# Endpoints
 # ──────────────────────────────────────────────
 
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/docs")
+async def health():
+    """Health check."""
+    return {"status": "healthy", "service": "network-incident-response-env", "version": "2.0.0"}
 
 
 @app.get("/tasks")
-def list_tasks() -> Dict[str, Any]:
+async def tasks():
+    """List available tasks."""
     return {
         "tasks": [
-            {"id": k, "difficulty": cls.__name__} for k, cls in SCENARIO_REGISTRY.items()
+            {"id": tid, "attack_type": cls.ATTACK_TYPE}
+            for tid, cls in SCENARIO_REGISTRY.items()
         ]
     }
 
 
-class ResetRequest(BaseModel):
-    """Request body for /reset."""
+@app.post("/reset")
+async def reset(request: Request):
+    """Reset the environment. Optionally accepts {"task_id": "..."} in the body."""
+    global _env, _last_done
 
-    task_id: str = "ssh_bruteforce"
+    body: Dict[str, Any] = {}
+    try:
+        raw = await request.body()
+        if raw:
+            body = json.loads(raw)
+    except Exception:
+        pass
 
+    task_id = body.get("task_id", "ssh_bruteforce")
+    seed = body.get("seed", 0)
 
-@app.post("/reset", response_model=Observation)
-def reset(payload: Optional[ResetRequest] = None, task_id: Optional[str] = None) -> Observation:
-    """
-    Reset the environment for a given task.
-
-    Accepts either:
-    - JSON body: {"task_id": "..."}
-    - Query param: ?task_id=...
-    """
-    requested_task = (
-        payload.task_id
-        if payload is not None and payload.task_id
-        else task_id or "ssh_bruteforce"
-    )
-    if requested_task not in SCENARIO_REGISTRY:
+    if task_id not in SCENARIO_REGISTRY:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unknown task_id '{requested_task}'. "
-                f"Valid: {list(SCENARIO_REGISTRY.keys())}"
-            ),
+            detail=f"Unknown task_id '{task_id}'. "
+                   f"Valid: {list(SCENARIO_REGISTRY.keys())}",
         )
-    # Reinitialise for the requested task
-    app.state.env = NetworkIncidentEnv(task_id=requested_task)
-    return app.state.env.reset()
+
+    _env = NetworkIncidentEnv(task_id=task_id, seed=seed)
+    obs: Observation = _env.reset()
+    _last_done = False
+
+    return {"observation": obs.model_dump(), "info": {}}
 
 
 @app.post("/step")
-def step(action: Action) -> Dict[str, Any]:
-    """
-    Submit an action and advance the environment by one step.
+async def step(action: Action):
+    """Execute one action in the environment."""
+    global _last_done
 
-    Body example:
-    ```json
-    {"action_type": "block_ip", "parameters": {"ip": "203.0.113.42"}}
-    ```
-    """
-    env = get_env()
-    try:
-        obs, reward, done, info = env.step(action)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    if _env is None:
+        raise HTTPException(status_code=400, detail="Call /reset first")
+    if _last_done:
+        raise HTTPException(status_code=400, detail="Episode is done — call /reset")
+
+    obs, reward, done, info = _env.step(action)
+    _last_done = done
 
     return {
         "observation": obs.model_dump(),
@@ -147,29 +143,43 @@ def step(action: Action) -> Dict[str, Any]:
 
 
 @app.get("/state")
-def state() -> Dict[str, Any]:
-    """Return the current internal state (lightweight snapshot)."""
-    return get_env().state()
+async def state():
+    """Return the current environment state."""
+    if _env is None:
+        raise HTTPException(status_code=400, detail="Call /reset first")
+    return _env.state()
 
 
 @app.get("/summary")
-def summary() -> Dict[str, Any]:
-    """Return the full episode summary + graded score (call after done=True)."""
-    from graders import grade
-    env = get_env()
+async def summary():
+    """Return the episode summary with graded score."""
+    if _env is None:
+        raise HTTPException(status_code=400, detail="No episode has been run")
     try:
-        ep = env.episode_summary()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        s = _env.episode_summary()
+        return {
+            "summary": s.model_dump(),
+            "graded_score": grade(s),
+        }
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    score = grade(ep)
-    return {**ep.model_dump(), "graded_score": score}
+
+@app.get("/grade_breakdown")
+async def breakdown():
+    """Detailed scoring breakdown (debug endpoint)."""
+    if _env is None:
+        raise HTTPException(status_code=400, detail="No episode has been run")
+    try:
+        s = _env.episode_summary()
+        return grade_breakdown(s)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ──────────────────────────────────────────────
-# Entry point
+# Run
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 7860))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=7860)

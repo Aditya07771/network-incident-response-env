@@ -1,14 +1,15 @@
 """
 graders.py
-Deterministic episode graders for all three tasks.
+Continuous multi-dimensional grading for the Network Incident Response Env.
 
-Each grader receives an EpisodeSummary and returns a float score in (0, 1).
+Scoring dimensions (weighted):
+  - Threat neutralization    40%   Did the agent stop the attack?
+  - Speed                    25%   How quickly was it contained?
+  - Investigation quality    20%   Did the agent gather evidence first?
+  - Collateral avoidance     15%   Were false positives minimised?
 
-Grading rubric
-──────────────
-ssh_bruteforce   : Correct IP blocked quickly → 1.0 | slowly → 0.7 | wrong → 0.0
-stealth_scan     : Correct IP blocked, no collateral → 1.0 | with collateral → 0.6 | missed → 0.0
-lateral_movement : Pivot isolated early → 1.0 | late → 0.5 | DB compromised → 0.0
+All final scores are clamped to the open interval (0.0001, 0.9999)
+to satisfy the OpenEnv requirement of strictly (0, 1).
 """
 
 from __future__ import annotations
@@ -16,100 +17,166 @@ from __future__ import annotations
 from env_models import EpisodeSummary
 
 
-_EPSILON = 1e-4
+# ──────────────────────────────────────────────
+# Strict open-interval clamping
+# ──────────────────────────────────────────────
 
+_EPS = 0.0001
 
-def _strict_unit_interval(score: float) -> float:
-    """Clamp any score into the open interval required by the validator."""
-    return round(min(1.0 - _EPSILON, max(_EPSILON, score)), 4)
+def _clamp(x: float) -> float:
+    """Clamp x to (_EPS, 1 - _EPS) — strictly inside (0, 1)."""
+    return max(_EPS, min(1.0 - _EPS, x))
 
 
 # ──────────────────────────────────────────────
-# Per-task graders
+# Dimension scorers
 # ──────────────────────────────────────────────
 
-def grade_ssh_bruteforce(summary: EpisodeSummary) -> float:
+def _threat_neutralization_score(s: EpisodeSummary) -> float:
     """
-    Easy task.
-    - Correct attacker blocked within ≤10 steps → 1.00
-    - Correct attacker blocked after 10 steps   → 0.70
-    - Attacker NOT blocked (or wrong IP)         → 0.00
-    Collateral damage subtracts 0.20 from the above.
+    Did the agent stop the attack AND correctly identify it?
+
+    1.0 if threat neutralized AND attack type correct
+    0.8 if threat neutralized but attack type wrong/missing
+    0.3 if attack type identified but threat not neutralized
+    0.0 if neither
     """
-    if summary.attacker_ip not in summary.blocked_ips:
-        return _strict_unit_interval(0.0)
-
-    base = 1.0 if summary.steps_taken <= 10 else 0.7
-    if summary.collateral_damage:
-        base = max(0.0, base - 0.20)
-    return _strict_unit_interval(base)
-
-
-def grade_stealth_scan(summary: EpisodeSummary) -> float:
-    """
-    Medium task.
-    - Correct IP blocked, zero collateral → 1.00
-    - Correct IP blocked, with collateral → 0.60
-    - Attacker NOT blocked                → 0.00
-    Speed bonus: if solved in ≤8 steps add 0.10 (capped at 1.0).
-    """
-    if summary.attacker_ip not in summary.blocked_ips:
-        return _strict_unit_interval(0.0)
-
-    base = 0.60 if summary.collateral_damage else 1.0
-
-    # Speed bonus (only when no collateral)
-    if not summary.collateral_damage and summary.steps_taken <= 8:
-        base = min(1.0, base + 0.10)
-
-    return _strict_unit_interval(base)
-
-
-def grade_lateral_movement(summary: EpisodeSummary) -> float:
-    """
-    Hard task.
-    The agent must block either the initial attacker OR the pivot server
-    (10.0.1.80) before the DB is deeply compromised.
-
-    Scoring:
-    - Pivot/attacker isolated before step 10 → 1.00
-    - Pivot/attacker isolated after step 10  → 0.50
-    - Neither blocked                         → 0.00
-    Collateral subtracts 0.20.
-    """
-    PIVOT = "10.0.1.80"
-    target_blocked = (
-        summary.attacker_ip in summary.blocked_ips
-        or PIVOT in summary.blocked_ips
+    neutralized = s.threat_neutralized
+    type_correct = (
+        s.agent_attack_type is not None
+        and s.agent_attack_type.lower() == s.ground_truth_attack_type.lower()
     )
 
-    if not target_blocked:
-        return _strict_unit_interval(0.0)
+    if neutralized and type_correct:
+        return 1.0
+    if neutralized:
+        return 0.8
+    if type_correct:
+        return 0.3
+    return 0.0
 
-    # Find the step at which the blocking occurred
-    # We approximate using steps_taken (first correct block ends episode)
-    base = 1.0 if summary.steps_taken < 10 else 0.5
 
-    if summary.collateral_damage:
-        base = max(0.0, base - 0.20)
+def _speed_score(s: EpisodeSummary) -> float:
+    """
+    How quickly was the threat neutralized?
 
-    return _strict_unit_interval(base)
+    Scored as (max_steps - steps_taken) / max_steps if neutralized.
+    0.1 base if not neutralized (agent used all steps but failed).
+    """
+    if not s.threat_neutralized:
+        return 0.1
+
+    ratio = (s.max_steps - s.steps_taken) / max(1, s.max_steps)
+    return max(0.1, ratio)
+
+
+def _investigation_score(s: EpisodeSummary) -> float:
+    """
+    Did the agent investigate before acting?
+
+    Rewards:
+      - 0.3 per unique IP investigated, up to 3 IPs (max 0.9)
+      - 0.1 base for any investigation
+      - Capped at 1.0
+    """
+    if s.investigation_actions == 0:
+        return 0.0
+
+    ip_bonus = min(3, s.unique_ips_investigated) * 0.3
+    return min(1.0, 0.1 + ip_bonus)
+
+
+def _collateral_score(s: EpisodeSummary) -> float:
+    """
+    Were false positives avoided?
+
+    1.0 if zero collateral
+    Deduct 0.25 per wrong block/isolation, floor at 0.0
+    """
+    total_collateral = s.collateral_blocks + s.collateral_isolations
+    return max(0.0, 1.0 - total_collateral * 0.25)
 
 
 # ──────────────────────────────────────────────
-# Dispatcher
+# Task-specific weight profiles
 # ──────────────────────────────────────────────
 
-_GRADERS = {
-    "ssh_bruteforce": grade_ssh_bruteforce,
-    "stealth_scan": grade_stealth_scan,
-    "lateral_movement": grade_lateral_movement,
+WEIGHT_PROFILES = {
+    "ssh_bruteforce": {
+        "neutralization": 0.45,
+        "speed": 0.30,
+        "investigation": 0.10,
+        "collateral": 0.15,
+    },
+    "port_scan": {
+        "neutralization": 0.40,
+        "speed": 0.20,
+        "investigation": 0.25,
+        "collateral": 0.15,
+    },
+    "data_exfiltration": {
+        "neutralization": 0.35,
+        "speed": 0.25,
+        "investigation": 0.25,
+        "collateral": 0.15,
+    },
+    "lateral_movement": {
+        "neutralization": 0.35,
+        "speed": 0.20,
+        "investigation": 0.30,
+        "collateral": 0.15,
+    },
+    "ransomware_c2": {
+        "neutralization": 0.35,
+        "speed": 0.25,
+        "investigation": 0.25,
+        "collateral": 0.15,
+    },
+}
+
+DEFAULT_WEIGHTS = {
+    "neutralization": 0.40,
+    "speed": 0.25,
+    "investigation": 0.20,
+    "collateral": 0.15,
 }
 
 
+# ──────────────────────────────────────────────
+# Main grading function
+# ──────────────────────────────────────────────
+
 def grade(summary: EpisodeSummary) -> float:
-    """Unified entry-point: dispatch to the correct grader by task_id."""
-    grader = _GRADERS.get(summary.task_id)
-    if grader is None:
-        raise ValueError(f"No grader registered for task_id='{summary.task_id}'")
-    return _strict_unit_interval(grader(summary))
+    """
+    Compute the final task score from an EpisodeSummary.
+
+    Returns a float in the open interval (0, 1).
+    """
+    w = WEIGHT_PROFILES.get(summary.task_id, DEFAULT_WEIGHTS)
+
+    neutralization = _threat_neutralization_score(summary)
+    speed = _speed_score(summary)
+    investigation = _investigation_score(summary)
+    collateral = _collateral_score(summary)
+
+    raw = (
+        w["neutralization"] * neutralization
+        + w["speed"] * speed
+        + w["investigation"] * investigation
+        + w["collateral"] * collateral
+    )
+
+    return _clamp(raw)
+
+
+def grade_breakdown(summary: EpisodeSummary) -> dict:
+    """Return the full scoring breakdown (useful for debugging)."""
+    w = WEIGHT_PROFILES.get(summary.task_id, DEFAULT_WEIGHTS)
+    return {
+        "neutralization": round(_threat_neutralization_score(summary), 4),
+        "speed": round(_speed_score(summary), 4),
+        "investigation": round(_investigation_score(summary), 4),
+        "collateral": round(_collateral_score(summary), 4),
+        "weights": w,
+        "final_score": grade(summary),
+    }

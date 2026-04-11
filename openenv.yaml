@@ -1,8 +1,11 @@
 name: network-incident-response
-version: "1.0.0"
+version: "2.0.0"
 description: >
-  SOC analyst training environment. AI agents detect and respond to realistic
-  network attacks by analysing SIEM log streams and executing defensive actions.
+  An RL environment for training SOC analyst agents. Agents investigate network
+  security incidents using a realistic toolkit (traffic analysis, payload
+  inspection, threat intelligence, event correlation) before taking containment
+  actions and submitting an incident report. Five distinct attack scenarios
+  with no pre-labelled data — the agent must reason from raw network telemetry.
 
 author: "normie69k"
 license: MIT
@@ -12,24 +15,44 @@ inference_entry: inference.py
 tasks:
   - id: ssh_bruteforce
     difficulty: easy
-    max_steps: 20
+    max_steps: 30
     description: >
-      Identify and block an SSH brute-force attacker hidden among
-      legitimate login traffic.
+      Detect and block an SSH brute-force attacker hidden among legitimate
+      SSH login traffic. Events have no severity labels — the agent must
+      identify the attack from connection patterns and frequencies.
 
-  - id: stealth_scan
+  - id: port_scan
     difficulty: medium
-    max_steps: 20
+    max_steps: 30
     description: >
-      Detect a slow TCP port-scan buried in high-volume HTTP/HTTPS traffic
-      without blocking legitimate users.
+      Detect a stealthy SYN port scan across multiple internal hosts.
+      The probe occurs only every 2 steps and is buried in heavy
+      legitimate web traffic. The agent must spot the port diversity.
+
+  - id: data_exfiltration
+    difficulty: medium
+    max_steps: 30
+    description: >
+      A compromised internal host is exfiltrating sensitive data via DNS
+      tunnelling. The agent must identify the oversized, hex-encoded DNS
+      queries and isolate the compromised host before data is leaked.
 
   - id: lateral_movement
     difficulty: hard
-    max_steps: 20
+    max_steps: 30
     description: >
-      Correlate a multi-stage APT attack (SQLi → web-server compromise →
-      DB pivot) and isolate the compromised host before data exfiltration.
+      Multi-stage APT attack: external SQL injection compromises a web server,
+      which then pivots to the internal database. The agent must correlate
+      both phases and isolate the compromised host to break the attack chain.
+
+  - id: ransomware_c2
+    difficulty: hard
+    max_steps: 30
+    description: >
+      A compromised host communicates with a C2 server via periodic HTTPS
+      beacons with uniform payload sizes while encrypting local files.
+      The agent must detect the beaconing pattern and isolate the host
+      before critical data is encrypted.
 
 environment:
   api_base_url: ${API_BASE_URL}
@@ -37,6 +60,11 @@ environment:
   hf_token:     ${HF_TOKEN}
 
 scoring:
-  metric: graded_score        # float in [0, 1]
+  metric: graded_score        # float in (0, 1) — strictly exclusive
   aggregation: mean           # average across tasks
   higher_is_better: true
+  dimensions:
+    - neutralization            # 40% — did the agent stop the attack?
+    - speed                     # 25% — how quickly?
+    - investigation             # 20% — did the agent investigate first?
+    - collateral                # 15% — were false positives avoided?

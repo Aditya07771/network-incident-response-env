@@ -25,9 +25,8 @@ WORKDIR /app
 COPY --from=deps /usr/local/lib/python3.11 /usr/local/lib/python3.11
 COPY --from=deps /usr/local/bin            /usr/local/bin
 
-# Copy application source
-COPY --chown=appuser:appuser *.py   ./
-COPY --chown=appuser:appuser openenv.yaml ./
+# Copy entire application source (this fixes the missing server folder bug)
+COPY --chown=appuser:appuser . ./
 
 USER appuser
 
